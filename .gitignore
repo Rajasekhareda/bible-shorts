@@ -1,0 +1,7 @@
+output/
+tmp/
+assets/fonts/*.ttf
+client_secret.json
+*.pyc
+__pycache__/
+.venv/
