@@ -25,7 +25,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 VERSES_FILE = ROOT / "verses.json"
-FONTS_DIR = ROOT / "assets" / "fonts"
 MUSIC_DIR = ROOT / "assets" / "music"
 OUTPUT_DIR = ROOT / "output"
 TMP_DIR = ROOT / "tmp"
@@ -33,23 +32,30 @@ TMP_DIR = ROOT / "tmp"
 WIDTH, HEIGHT = 1080, 1920
 FPS = 30
 
-TELUGU_FONT_CANDIDATES = ["NotoSansTelugu-Bold.ttf", "NotoSansTelugu-Regular.ttf"]
-ENGLISH_FONT_CANDIDATES = ["Poppins-SemiBold.ttf", "Poppins-Regular.ttf", "DejaVuSans-Bold.ttf"]
-
 
 def fail(msg: str) -> None:
     print(f"ERROR: {msg}", file=sys.stderr)
     sys.exit(1)
 
 
-def find_font(candidates) -> Path:
-    for name in candidates:
-        p = FONTS_DIR / name
-        if p.exists():
-            return p
+def find_system_font(patterns) -> Path:
+    """Ask fontconfig (fc-match) for an installed font file, trying each
+    pattern in order. Far more reliable than hardcoding a download URL,
+    since it just asks the OS what's actually installed."""
+    for pattern in patterns:
+        try:
+            result = subprocess.run(
+                ["fc-match", "-f", "%{file}", pattern],
+                capture_output=True, text=True, check=True,
+            )
+            path = Path(result.stdout.strip())
+            if path.exists():
+                return path
+        except Exception:
+            continue
     fail(
-        f"No font found in {FONTS_DIR}. Expected one of: {candidates}. "
-        "The workflow's 'Fetch fonts' step should have downloaded these."
+        f"Could not find any installed font matching: {patterns}. "
+        "Make sure the workflow's 'Install fonts' step (apt-get install fonts-noto) ran successfully."
     )
 
 
@@ -122,8 +128,11 @@ def build_video(entry: dict) -> Path:
     english_txt.write_text(english_wrapped, encoding="utf-8")
     ref_txt.write_text(reference, encoding="utf-8")
 
-    telugu_font = find_font(TELUGU_FONT_CANDIDATES)
-    english_font = find_font(ENGLISH_FONT_CANDIDATES)
+    telugu_font = find_system_font([
+        "Noto Sans Telugu:bold", "Noto Sans Telugu",
+        "Noto Sans Telugu UI:bold", "Noto Sans Telugu UI",
+    ])
+    english_font = find_system_font(["Noto Sans:bold", "DejaVu Sans:bold"])
     music = pick_music()
 
     duration = compute_duration(telugu, english)
