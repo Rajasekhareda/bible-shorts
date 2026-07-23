@@ -1,0 +1,89 @@
+name: Edit an Existing Short
+
+on:
+  workflow_dispatch:
+    inputs:
+      verse_id:
+        description: "The 'id' value from your Google Sheet for the short you want to edit"
+        required: true
+      new_font_style:
+        description: "Layer 1 - Font style (modern / elegant / bold). Blank = unchanged."
+        required: false
+        default: ""
+      new_music_file:
+        description: "Layer 2 - Music filename from assets/music/. Blank = unchanged."
+        required: false
+        default: ""
+      new_telugu_text:
+        description: "Layer 3a - Replacement Telugu text. Blank = unchanged."
+        required: false
+        default: ""
+      new_english_text:
+        description: "Layer 3b - Replacement English text. Blank = unchanged."
+        required: false
+        default: ""
+      reupload:
+        description: "Upload the re-rendered video to YouTube as a new Short? (true/false)"
+        required: false
+        default: "false"
+
+jobs:
+  edit_and_maybe_upload:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system deps
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-noto
+
+      - name: Install Python deps
+        run: pip install -r requirements.txt
+
+      - name: Fetch verse by id
+        id: verse
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          VERSE_ID: ${{ github.event.inputs.verse_id }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from scripts.sheets_sync import get_row_by_id
+          _, verse = get_row_by_id(os.environ["VERSE_ID"])
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"telugu={verse.get('telugu','')}\n")
+              f.write(f"english={verse.get('english','')}\n")
+              f.write(f"reference={verse.get('reference','')}\n")
+          PY
+
+      - name: Re-render with overrides
+        env:
+          VERSE_TELUGU: ${{ steps.verse.outputs.telugu }}
+          VERSE_ENGLISH: ${{ steps.verse.outputs.english }}
+          VERSE_REF: ${{ steps.verse.outputs.reference }}
+          FONT_STYLE: ${{ github.event.inputs.new_font_style }}
+          MUSIC_FILE: ${{ github.event.inputs.new_music_file }}
+          OVERRIDE_TELUGU: ${{ github.event.inputs.new_telugu_text }}
+          OVERRIDE_ENGLISH: ${{ github.event.inputs.new_english_text }}
+          OUTPUT_PATH: output/edited_short.mp4
+        run: python3 scripts/generate_video.py
+
+      - name: Upload edited version as artifact (always, for preview)
+        uses: actions/upload-artifact@v4
+        with:
+          name: edited-short-preview
+          path: output/edited_short.mp4
+
+      - name: Upload to YouTube (only if requested)
+        if: ${{ github.event.inputs.reupload == 'true' }}
+        env:
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+          VIDEO_PATH: output/edited_short.mp4
+          VIDEO_TITLE: "${{ steps.verse.outputs.reference }} | Daily Bible Verse (edited)"
+        run: python3 scripts/upload_youtube.py
