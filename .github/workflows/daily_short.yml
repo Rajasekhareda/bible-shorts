@@ -2,39 +2,60 @@ name: Daily Bible Verse Short
 
 on:
   schedule:
-    - cron: "0 23 * * *"
-  workflow_dispatch: {}
-
-permissions:
-  contents: write
+    - cron: "0 23 * * *"   # 5:00 AM IST, unchanged
+  workflow_dispatch:        # adds a "Run workflow" button in the Actions tab
+    inputs:
+      font_style:
+        description: "Font style override (modern / elegant / bold). Leave blank for default."
+        required: false
+        default: ""
+      music_file:
+        description: "Specific music filename from assets/music/. Leave blank for random."
+        required: false
+        default: ""
 
 jobs:
-  build-and-publish:
+  build_and_upload:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install ffmpeg and fonts
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-dejavu fonts-noto fonts-noto-core fonts-noto-extra fonts-noto-ui-core
-          fc-cache -f
-          echo "--- Telugu font check ---"
-          fc-match "Noto Sans Telugu"
-          echo "--- English font check ---"
-          fc-match "Noto Sans:bold"
+      - name: Install system deps (ffmpeg + fonts)
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-noto
 
-      - name: Install Python dependencies
+      - name: Install Python deps
         run: pip install -r requirements.txt
 
-      - name: Generate today's video
+      - name: Pick next verse from Google Sheet
+        id: verse
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from scripts.sheets_sync import get_next_unused_verse
+          row_no, verse = get_next_unused_verse()
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"row_no={row_no}\n")
+              f.write(f"id={verse.get('id','')}\n")
+              f.write(f"telugu={verse.get('telugu','')}\n")
+              f.write(f"english={verse.get('english','')}\n")
+              f.write(f"reference={verse.get('reference','')}\n")
+          PY
+
+      - name: Render video
+        env:
+          VERSE_TELUGU: ${{ steps.verse.outputs.telugu }}
+          VERSE_ENGLISH: ${{ steps.verse.outputs.english }}
+          VERSE_REF: ${{ steps.verse.outputs.reference }}
+          FONT_STYLE: ${{ github.event.inputs.font_style }}
+          MUSIC_FILE: ${{ github.event.inputs.music_file }}
+          OUTPUT_PATH: output/short.mp4
         run: python3 scripts/generate_video.py
 
       - name: Upload to YouTube
@@ -42,21 +63,18 @@ jobs:
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+          VIDEO_PATH: output/short.mp4
+          VIDEO_TITLE: "${{ steps.verse.outputs.reference }} | Daily Bible Verse"
         run: python3 scripts/upload_youtube.py
 
-      - name: Save rendered video as a workflow artifact (backup)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: short-${{ github.run_id }}
-          path: output/*.mp4
-          retention-days: 14
-
-      - name: Commit updated verse queue
-        if: success()
+      - name: Mark verse used in Sheet
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          ROW_NO: ${{ steps.verse.outputs.row_no }}
         run: |
-          git config user.name "bible-shorts-bot"
-          git config user.email "actions@users.noreply.github.com"
-          git add verses.json
-          git diff --cached --quiet || git commit -m "Mark today's verse as used [skip ci]"
-          git push
+          python3 - <<'PY'
+          import os
+          from scripts.sheets_sync import mark_used
+          mark_used(int(os.environ["ROW_NO"]))
+          PY
